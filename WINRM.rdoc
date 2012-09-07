@@ -1,0 +1,40 @@
+= Bootstrapping to EC2 Using WinRM
+
+This is a quick description of a way to ensure WinRM is up-and-running on your EC2 Windows instance, so you can bootstrap Chef onto it. You should probably read more about WinSSH on the {Chef Wiki}[http://wiki.opscode.com/display/chef/EC2+Bootstrap+Fast+Start+Guide].
+
+= How to enable WinRM
+
+In-depth usage instructions of WinRM with Chef can be found on the {Chef Wiki}[http://wiki.opscode.com/display/chef/EC2+Bootstrap+Fast+Start+Guide].
+First, you will have to add your instance to a Security Group that supports WinRM (allowing inbound traffic on port 5985, if you use normal http.  For secured (https) it is normally 5986, or you can use a custom port (not covered in this document).
+Recently, EC2 allows "cloud-init"-like functionality on Windows instances.  On starting up the Windows instance, EC2 looks at the contents of the "userdata", and if it finds anything within "<SCRIPT></SCRIPT>" tags it treats it as standard Windows batch; similarly, "<POWERSHELL></POWERSHELL>" is run as a PS script.
+So, all we need to do is enable WinRM inside those tags!
+
+    <powershell>
+    winrm quickconfig -q
+    winrm set winrm/config/winrs '@{MaxMemoryPerShellMB="300"}'
+    winrm set winrm/config '@{MaxTimeoutms="1800000"}'
+    winrm set winrm/config/service '@{AllowUnencrypted="true"}'
+    winrm set winrm/config/service/auth '@{Basic="true"}'
+    netsh advfirewall firewall set rule group="remote administration" new enable=yes
+    netsh advfirewall firewall add rule name="winrm_http" dir=in action=allow protocol=TCP localport=5985
+    netsh advfirewall firewall add rule name="winrm_https" dir=in action=allow protocol=TCP localport=5986
+    </powershell>
+
+Save the above text to a text file, save it, and pass this into your knife ec2 server create command as the userdata parameter.
+
+Aditionally, you could also create a default user for the bootstrap.  Add these commands inside the <powershell> tags above, and you will have a known user/password combination to bootstrap with.
+
+    # Create a default administrative user (gordonramsay) for winrm to bootstrap with
+    $c = gc env:computername
+    $u = "WinNT://" + $c
+    $objOu = [ADSI]($u)
+    $objUser = $objOU.Create("User", "gordonramsay")
+    $objUser.setpassword(a_secret_password)
+    $objUser.SetInfo()
+    $objUser.description = "Chef bootstrap user"
+    $objUser.SetInfo()
+    $g = "WinNT://" + $c + "/Administrators,group"
+    $objGroup = [ADSI]($g)
+    $objGroup.Add($objUser.ADsPath)
+
+
