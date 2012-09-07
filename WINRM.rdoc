@@ -5,8 +5,11 @@ This is a quick description of a way to ensure WinRM is up-and-running on your E
 = How to enable WinRM
 
 In-depth usage instructions of WinRM with Chef can be found on the {Chef Wiki}[http://wiki.opscode.com/display/chef/EC2+Bootstrap+Fast+Start+Guide].
+
 First, you will have to add your instance to a Security Group that supports WinRM (allowing inbound traffic on port 5985, if you use normal http.  For secured (https) it is normally 5986, or you can use a custom port (not covered in this document).
+
 Recently, EC2 allows "cloud-init"-like functionality on Windows instances.  On starting up the Windows instance, EC2 looks at the contents of the "userdata", and if it finds anything within "<SCRIPT></SCRIPT>" tags it treats it as standard Windows batch; similarly, "<POWERSHELL></POWERSHELL>" is run as a PS script.
+
 So, all we need to do is enable WinRM inside those tags!
 
     <powershell>

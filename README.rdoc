@@ -69,6 +69,8 @@ Generates instance metadata in meant to be used with Opscode's custom AMIs. This
 
 In-depth usage instructions can be found on the {Chef Wiki}[http://wiki.opscode.com/display/chef/EC2+Bootstrap+Fast+Start+Guide].
 
+The additional document WINRM.rdoc has more information on bootstrapping with WinRM.
+
 = LICENSE:
 
 Author:: Adam Jacob (<adam@opscode.com>)

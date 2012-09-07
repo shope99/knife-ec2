@@ -18,7 +18,6 @@
 # limitations under the License.
 #
 
-
 require 'chef/knife/ec2_base'
 
 class Chef
