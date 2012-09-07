@@ -1,6 +1,7 @@
 #
 # Author:: Adam Jacob (<adam@opscode.com>)
 # Author:: Seth Chisamore (<schisamo@opscode.com>)
+# Contributor:: Shaun Hope (<shope99@yahoo.com>)
 # Copyright:: Copyright (c) 2010-2011 Opscode, Inc.
 # License:: Apache License, Version 2.0
 #
@@ -16,6 +17,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+
 
 require 'chef/knife/ec2_base'
 
@@ -154,7 +156,6 @@ class Chef
         :proc => lambda { |o| JSON.parse(o) },
         :default => {}
 
-
       option :subnet_id,
         :short => "-s SUBNET-ID",
         :long => "--subnet SUBNET-ID",
@@ -174,11 +175,19 @@ class Chef
         :proc => Proc.new { |m| Chef::Config[:knife][:aws_user_data] = m },
         :default => nil
 
-      def tcp_test_ssh(hostname)
-        tcp_socket = TCPSocket.new(hostname, config[:ssh_port])
+      option :use_winrm,
+        :long => "--winrm",
+        :description => "Use winrm to bootstrap, instead of ssh",
+        :boolean => true,
+        :default => false
+
+     def tcp_test_ssh(hostname, port, expect_header=true)
+        tcp_socket = TCPSocket.new(hostname, port)
+        Chef::Log.debug("got tcp_socket")
         readable = IO.select([tcp_socket], nil, nil, 5)
-        if readable
-          Chef::Log.debug("sshd accepting connections on #{hostname}, banner is #{tcp_socket.gets}")
+        if readable || !expect_header         
+          header = expect_header ? "banner is #{tcp_socket.gets}" : "no header expected"
+          Chef::Log.debug("#{use_winrm? ? 'winrm' : 'sshd'} accepting connections on #{hostname}, #{header}")
           yield
           true
         else
@@ -210,7 +219,7 @@ class Chef
         $stdout.sync = true
 
         validate!
-
+       
         @server = connection.servers.create(create_server_def)
 
         hashed_tags={}
@@ -262,14 +271,23 @@ class Chef
         end
         msg_pair("Private IP Address", @server.private_ip_address)
 
-        print "\n#{ui.color("Waiting for sshd", :magenta)}"
+        print "\n#{ui.color("Waiting for #{use_winrm? ? 'winrm' : 'sshd'}", :magenta)}"
 
-        fqdn = vpc_mode? ? @server.private_ip_address : @server.dns_name
+        fqdn = vpc_mode? ? @server.private_ip_address : @server.dns_name        
 
-        print(".") until tcp_test_ssh(fqdn) {
+        port = config[:ssh_port]
+        print(".") until tcp_test_ssh(fqdn, port, !use_winrm?) {
           sleep @initial_sleep_delay ||= (vpc_mode? ? 40 : 10)
           puts("done")
         }
+
+        if use_winrm?
+          require 'chef/knife/bootstrap_windows_winrm'
+          require 'chef/knife/core/windows_bootstrap_context'
+          require 'chef/knife/winrm'
+          require 'chef/knife/winrm_base'
+          require 'em-winrm'
+        end 
 
         bootstrap_for_node(@server,fqdn).run
 
@@ -313,8 +331,8 @@ class Chef
         msg_pair("JSON Attributes",config[:json_attributes]) unless config[:json_attributes].empty?
       end
 
-      def bootstrap_for_node(server,fqdn)
-        bootstrap = Chef::Knife::Bootstrap.new
+      def bootstrap_for_node(server,fqdn)        
+        bootstrap = use_winrm? ? Chef::Knife::BootstrapWindowsWinrm.new : Chef::Knife::Bootstrap.new        
         bootstrap.name_args = [fqdn]
         bootstrap.config[:run_list] = config[:run_list]
         bootstrap.config[:ssh_user] = config[:ssh_user]
@@ -339,7 +357,12 @@ class Chef
         !!config[:subnet_id]
       end
 
+      def use_winrm?
+        !!config[:use_winrm]
+      end 
+
       def ami
+        puts "Locate image: #{locate_config_value(:image)}"
         @ami ||= connection.images.get(locate_config_value(:image))
       end
 
