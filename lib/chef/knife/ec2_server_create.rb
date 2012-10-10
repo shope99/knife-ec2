@@ -1,4 +1,3 @@
-
 #
 # Author:: Adam Jacob (<adam@opscode.com>)
 # Author:: Seth Chisamore (<schisamo@opscode.com>)
@@ -19,25 +18,17 @@
 #
 
 require 'chef/knife/ec2_base'
-require 'chef/knife/winrm_base'
-require 'winrm'
-require 'httpclient'
-#require 'gssapi'
 
 class Chef
   class Knife
     class Ec2ServerCreate < Knife
 
       include Knife::Ec2Base
-      include Knife::WinrmBase
+
       deps do
         require 'fog'
         require 'readline'
         require 'chef/json_compat'
-        require 'chef/knife/bootstrap_windows_winrm'
-        require 'chef/knife/bootstrap_windows_ssh'
-        require 'chef/knife/core/windows_bootstrap_context'
-        require 'chef/knife/winrm'
         require 'chef/knife/bootstrap'
         Chef::Knife::Bootstrap.load_deps
       end
@@ -119,6 +110,7 @@ class Chef
         :description => "The ssh gateway server",
         :proc => Proc.new { |key| Chef::Config[:knife][:ssh_gateway] = key }
 
+
       option :identity_file,
         :short => "-i IDENTITY_FILE",
         :long => "--identity-file IDENTITY_FILE",
@@ -177,18 +169,6 @@ class Chef
         :boolean => true,
         :default => true
 
-      option :bootstrap_protocol,
-        :long => "--bootstrap-protocol protocol",
-        :description => "protocol to bootstrap windows servers. options: winrm/ssh",
-        :proc => Proc.new { |key| Chef::Config[:knife][:bootstrap_protocol] = key },
-        :default => "winrm"
-
-      option :fqdn,
-        :long => "--fqdn FQDN",
-        :description => "Pre-defined FQDN",
-        :proc => Proc.new { |key| Chef::Config[:knife][:fqdn] = key },
-        :default => nil
-
       option :aws_user_data,
         :long => "--user-data USER_DATA_FILE",
         :short => "-u USER_DATA_FILE",
@@ -217,45 +197,9 @@ class Chef
         :description => "The EC2 server attribute to use for SSH connection",
         :default => nil
 
-	  option :device_map_file,
+      option :device_map_file,
         :long => "--device-map DEVICE_MAP_FILE",
         :description => "JSON file containing additional block device mappings to add on instance creation"
-    
-      def tcp_test_winrm(hostname)
-        Chef::Log.debug('testwinrm hostname = #{hostname}')
-        config[:winrm_port] = locate_config_value(:winrm_port)
-        if locate_config_value(:kerberos_realm)
-          endpoint = "http://#{hostname}:#{config[:winrm_port]}/wsman"
-          winrm = WinRM::WinRMWebService.new(endpoint, :kerberos, :realm => locate_config_value(:kerberos_realm))
-        else
-          endpoint = "http://#{hostname}:#{config[:winrm_port]}/wsman"
-          Chef::Log.debug(endpoint)
-          Chef::Log.debug(locate_config_value(:winrm_user))
-          Chef::Log.debug(locate_config_value(:winrm_password))
-          winrm = WinRM::WinRMWebService.new(endpoint, :plaintext,
-                                             :user => locate_config_value(:winrm_user),
-                                             :pass => locate_config_value(:winrm_password))
-        end
-
-        if winrm.open_shell()
-          Chef::Log.debug("WinRM accepting connections on #{hostname}")
-          return true
-        else
-          return false
-        end
-#      rescue GSSAPI::GssApiError
-#        sleep 10
-#        false
-      rescue HTTPClient::ConnectTimeoutError, SocketError, Errno::ECONNREFUSED, Errno::EHOSTUNREACH,
-        Errno::ENETUNREACH 
-        sleep 2
-        false
-      rescue WinRM::WinRMHTTPTransportError
-        Chef::Log.debug("WinRM::WinRMHTTPTransportError... trying again")
-        true # completely bad to catch an exception and return true here... but let's see what happens
-      rescue Errno::ETIMEDOUT, Errno::EPERM
-        false
-      end
 
       def tcp_test_ssh(hostname, ssh_port)
         tcp_socket = TCPSocket.new(hostname, ssh_port)
@@ -274,44 +218,6 @@ class Chef
         false
       ensure
         tcp_socket && tcp_socket.close
-      end
-
-      def decrypt_admin_password(encoded_password, key)
-        require 'base64'
-        require 'openssl'
-        private_key = OpenSSL::PKey::RSA.new(key)
-        encrypted_password = Base64.decode64(encoded_password)
-        password = private_key.private_decrypt(encrypted_password)
-        password
-      end
-
-      def check_windows_password_available(server_id)
-        response = connection.get_password_data(server_id)
-        if not response.body["passwordData"]
-          sleep 10
-          return false
-        end
-        response.body["passwordData"]
-      end
-
-      def fetch_windows_password(server)
-        if not locate_config_value(:winrm_password)
-          if locate_config_value(:identity_file)
-            print "\n#{ui.color("Waiting for Windows Admin password to be available", :magenta)}"
-            print(".") until check_windows_password_available(server.id) {
-              sleep 10
-              puts("done")
-            }
-            response = connection.get_password_data(server.id)
-            data = File.read(locate_config_value(:identity_file))
-            config[:winrm_password] = decrypt_admin_password(response.body["passwordData"], data)
-          else
-            ui.error("Cannot find SSH Identity file, required to fetch dynamically generated password")
-            exit 1
-          end
-        else
-          locate_config_value(:winrm_password)
-        end
       end
 
       def run
@@ -370,38 +276,11 @@ class Chef
         end
         msg_pair("Private IP Address", @server.private_ip_address)
 
-#        fqdn = vpc_mode? or locate_config_value(:kerberos_realm) ? @server.private_ip_address : @server.dns_name
-        fqdn = (vpc_mode? or locate_config_value(:kerberos_realm)) ? @server.public_ip_address : @server.dns_name
-        Chef::Log.debug("fqdn = #{fqdn}")
-        #Check if Server is Windows or Linux
-        image_info = connection.images.get(@server.image_id)
-        if image_info.platform == 'windows'
-          protocol = locate_config_value(:bootstrap_protocol)
-          if protocol == 'winrm'
-            print "\n#{ui.color("Waiting for winrm", :magenta)}"
-           #Fetch dynamically available password
-            if not locate_config_value(:kerberos_realm)
-              fetch_windows_password(server)
-            end
-            print(".") until tcp_test_winrm(fqdn) {
-              sleep 10
-              puts("done")
-            }
+        print "\n#{ui.color("Waiting for sshd", :magenta)}"
 
-          else
-            print "\n#{ui.color("Waiting for sshd", :magenta)}"
-            #If FreeSSHd, winsshd etc are available
-            print(".") until tcp_test_ssh(fqdn) {
-              sleep @initial_sleep_delay ||= (vpc_mode? ? 40 : 10)
-              puts("done")
-            }
-          end
-          bootstrap_for_windows_node(@server,fqdn).run
-        else
-          print "\n#{ui.color("Waiting for sshd", :magenta)}"
-          wait_for_sshd(ssh_connect_host)
-          bootstrap_for_node(@server,fqdn).run
-        end
+        wait_for_sshd(ssh_connect_host)
+
+        bootstrap_for_node(@server,ssh_connect_host).run
 
         puts "\n"
         msg_pair("Instance ID", @server.id)
@@ -415,23 +294,28 @@ class Chef
         msg_pair("SSH Key", @server.key_name)
         msg_pair("Root Device Type", @server.root_device_type)
         if @server.root_device_type == "ebs"
-          @server.block_device_mapping.each do |device_map| 
-	          msg_pair("Volume ID", device_map['volumeId'])
-	          msg_pair("Device Name", device_map['deviceName'])
-	          msg_pair("Device Delete on Terminate", device_map['deleteOnTermination'])
+          device_map = @server.block_device_mapping.first
+          msg_pair("Root Volume ID", device_map['volumeId'])
+          msg_pair("Root Device Name", device_map['deviceName'])
+          msg_pair("Root Device Delete on Terminate", device_map['deleteOnTermination'])
 
+          if config[:ebs_size]
+            if ami.block_device_mapping.first['volumeSize'].to_i < config[:ebs_size].to_i
+              volume_too_large_warning = "#{config[:ebs_size]}GB " +
+                          "EBS volume size is larger than size set in AMI of " +
+                          "#{ami.block_device_mapping.first['volumeSize']}GB.\n" +
+                          "Use file system tools to make use of the increased volume size."
+              msg_pair("Warning", volume_too_large_warning, :yellow)
+            end
           end
-        
-		  if config[:ebs_size]
-			if ami.block_device_mapping.first['volumeSize'].to_i < config[:ebs_size].to_i
-			  volume_too_large_warning = "#{config[:ebs_size]}GB " +
-			              "Root EBS volume size is larger than size set in AMI of " +
-			              "#{ami.block_device_mapping.first['volumeSize']}GB.\n" +
-			              "Use file system tools to make use of the increased volume size."
-			  msg_pair("Warning", volume_too_large_warning, :yellow)
-			end
-		  end
-		end
+        end
+
+        if config[:device_map_file] then
+          device_map = JSON.parse(File.read(config[:device_map_file]))
+          server_def[:block_device_mapping].concat(device_map)
+          Chef::Log.info("Mapping devices... #{server_def[:block_device_mapping] }")
+        end 
+
         if vpc_mode?
           msg_pair("Subnet ID", @server.subnet_id)
         else
@@ -444,72 +328,26 @@ class Chef
         msg_pair("Run List", (config[:run_list] || []).join(', '))
         msg_pair("JSON Attributes",config[:json_attributes]) unless !config[:json_attributes] || config[:json_attributes].empty?
       end
-      def bootstrap_common_params(bootstrap)
-
-        bootstrap.config[:run_list] = config[:run_list]
-        bootstrap.config[:prerelease] = config[:prerelease]
-        bootstrap.config[:bootstrap_version] = locate_config_value(:bootstrap_version)
-        bootstrap.config[:distro] = locate_config_value(:distro)
-        bootstrap.config[:template_file] = locate_config_value(:template_file)
-        bootstrap
-      end
-
-      def fetch_server_fqdn(ip_addr)
-          require 'resolv'
-          Resolv.getname(ip_addr)
-      end
-
-      def bootstrap_for_windows_node(server, fqdn)
-        Chef::Log.debug("server = #{server}, fqdn=#{fqdn}")
-        if locate_config_value(:bootstrap_protocol) == 'winrm'
-            if locate_config_value(:kerberos_realm)
-              # Fetch AD/WINS based fqdn if any for Kerberos-based Auth
-              fqdn = locate_config_value(:fqdn) || fetch_server_fqdn(server.private_ip_address)
-            end
-            bootstrap = Chef::Knife::BootstrapWindowsWinrm.new
-
-            bootstrap.config[:winrm_user] = locate_config_value(:winrm_user)
-            bootstrap.config[:winrm_password] = locate_config_value(:winrm_password)
-            bootstrap.config[:winrm_transport] = locate_config_value(:winrm_transport)
-
-            bootstrap.config[:kerberos_keytab_file] = Chef::Config[:knife][:kerberos_keytab_file] if Chef::Config[:knife][:kerberos_keytab_file]
-            bootstrap.config[:kerberos_realm] = Chef::Config[:knife][:kerberos_realm] if Chef::Config[:knife][:kerberos_realm]
-            bootstrap.config[:kerberos_service] = Chef::Config[:knife][:kerberos_service] if Chef::Config[:knife][:kerberos_service]
-            bootstrap.config[:ca_trust_file] = Chef::Config[:knife][:ca_trust_file] if Chef::Config[:knife][:ca_trust_file]
-            bootstrap.config[:winrm_port] = locate_config_value(:winrm_port)
-
-        elsif locate_config_value(:bootstrap_protocol) == 'ssh'
-            bootstrap = Chef::Knife::BootstrapWindowsSsh.new
-            bootstrap.config[:ssh_user] = locate_config_value(:ssh_user)
-            bootstrap.config[:ssh_password] = locate_config_value(:ssh_password)
-            bootstrap.config[:ssh_port] = locate_config_value(:ssh_port)
-            bootstrap.config[:identity_file] = locate_config_value(:identity_file)
-            bootstrap.config[:no_host_key_verify] = locate_config_value(:no_host_key_verify)
-        else
-            ui.error("Unsupported Bootstrapping Protocol. Supported : winrm, ssh")
-            exit 1
-        end
-        bootstrap.name_args = [fqdn]
-        bootstrap.config[:chef_node_name] = config[:chef_node_name] || server.id
-        bootstrap.config[:encrypted_data_bag_secret] = config[:encrypted_data_bag_secret]
-        bootstrap.config[:encrypted_data_bag_secret_file] = config[:encrypted_data_bag_secret_file]
-        bootstrap_common_params(bootstrap)
-      end
 
       def bootstrap_for_node(server,ssh_host)
         bootstrap = Chef::Knife::Bootstrap.new
         bootstrap.name_args = [ssh_host]
+        bootstrap.config[:run_list] = locate_config_value(:run_list) || []
         bootstrap.config[:ssh_user] = config[:ssh_user]
         bootstrap.config[:ssh_port] = config[:ssh_port]
         bootstrap.config[:ssh_gateway] = config[:ssh_gateway]
         bootstrap.config[:identity_file] = config[:identity_file]
-        bootstrap.config[:chef_node_name] = config[:chef_node_name] || server.id
-        bootstrap.config[:first_boot_attributes] = config[:json_attributes]
+        bootstrap.config[:chef_node_name] = locate_config_value(:chef_node_name) || server.id
+        bootstrap.config[:prerelease] = config[:prerelease]
+        bootstrap.config[:bootstrap_version] = locate_config_value(:bootstrap_version)
+        bootstrap.config[:first_boot_attributes] = locate_config_value(:json_attributes) || {}
+        bootstrap.config[:distro] = locate_config_value(:distro) || "chef-full"
         bootstrap.config[:use_sudo] = true unless config[:ssh_user] == 'root'
+        bootstrap.config[:template_file] = locate_config_value(:template_file)
         bootstrap.config[:environment] = config[:environment]
         # may be needed for vpc_mode
         bootstrap.config[:host_key_verify] = config[:host_key_verify]
-        bootstrap_common_params(bootstrap)
+        bootstrap
       end
 
       def vpc_mode?
@@ -590,11 +428,6 @@ class Chef
                'Ebs.VolumeSize' => ebs_size,
                'Ebs.DeleteOnTermination' => delete_term
              }]
-  		  if config[:device_map_file] then
-            device_map = JSON.parse(File.read(config[:device_map_file]))
-            server_def[:block_device_mapping].concat(device_map)
-            Chef::Log.debug("Mapping devices... #{server_def[:block_device_mapping] }")
-          end              
         end
 
         (config[:ephemeral] || []).each_with_index do |device_name, i|
